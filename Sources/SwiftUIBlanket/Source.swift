@@ -202,6 +202,7 @@ private struct ContentDescriptor: Hashable {
 }
 
 private enum Phase {
+  case contentMounted
   case contentUnloaded
   case contentLoaded
   case displaying
@@ -219,7 +220,7 @@ public struct BlanketModifier<DisplayContent: View>: ViewModifier {
   @State private var phase: Phase = .contentUnloaded
   
   @Binding var isPresented: Bool
-
+  
   @State private var contentOffset: CGSize = .zero
 
   @State private var contentDescriptor: ContentDescriptor = .init()
@@ -258,15 +259,48 @@ public struct BlanketModifier<DisplayContent: View>: ViewModifier {
       }))
       .overlay(
         Group {
-          if isPresented {
-            _display
-              .onDisappear {
-                phase = .contentUnloaded
-              }
+          if phase == .contentMounted || phase == .contentLoaded || phase == .displaying {
+            _display              
           }
         },
         alignment: .bottom        
       )
+      .onChange(of: isPresented) { isPresented in 
+        switch isPresented {
+        case true:
+          self.phase = .contentMounted
+        case false:
+          self.phase = .contentUnloaded
+        }
+      }    
+      .onChange(of: phase) { phase in
+        
+        print(phase)
+        
+        switch phase {
+        case .contentMounted:
+          break
+        case .contentLoaded:
+          self.contentOffset.height = contentDescriptor.hidingOffset
+          // to animate sliding in
+          Task { @MainActor in
+            self.phase = .displaying
+          }
+          
+        case .displaying:
+          withAnimation(.spring(response: 0.45)) {
+            contentOffset.height = 0
+          }
+        case .contentUnloaded:
+          break
+        }
+        
+      }    
+      .onChange(
+        of: contentDescriptor
+      ) { newValue in          
+        dipatchResolve(newValue: newValue)          
+      }
 
   }
 
@@ -302,6 +336,15 @@ public struct BlanketModifier<DisplayContent: View>: ViewModifier {
       }      
     }
     .map { view in
+      switch configuration.mode {
+      case .inline:
+        view
+      case .presentation(let presentation):
+        view
+          .background(presentation.backgroundColor.opacity(isPresented ? 0.2 : 0))
+      }
+    }
+    .map { view in
       if #available(iOS 18, *) {
         
         // make this draggable
@@ -319,50 +362,12 @@ public struct BlanketModifier<DisplayContent: View>: ViewModifier {
       onUpdate: { height in
         model.presentingContentOffset.height = height
     })
-    .map { view in
-      switch configuration.mode {
-      case .inline:
-        view
-      case .presentation(let presentation):
-        view
-          .background(presentation.backgroundColor.opacity(isPresented ? 0.2 : 0))
-      }
-    }
-    .animation(.smooth, value: isPresented)   
+           
     .readingGeometry(
       transform: \.safeAreaInsets,
       target: $safeAreaInsets
     )
-    .onChangeWithPrevious(
-      of: contentDescriptor,
-      emitsInitial: true,
-      perform: {
-        newValue,
-        oldValue in
-        
-        dipatchResolve(newValue: newValue)
-      
-    })   
-    .onChange(of: phase) { phase in
-            
-      switch phase {
-      case .contentLoaded:
-        self.contentOffset.height = contentDescriptor.hidingOffset
-        
-        // to animate sliding in
-        Task { @MainActor in
-          self.phase = .displaying
-        }
-                
-      case .displaying:
-        withAnimation(.spring(response: 0.45)) {
-          contentOffset.height = 0
-        }
-      case .contentUnloaded:
-        break
-      }
-      
-    }
+ 
   }
   
   private func dipatchResolve(
@@ -445,10 +450,11 @@ public struct BlanketModifier<DisplayContent: View>: ViewModifier {
       self.model.resolved = newResolved
     }
     
-    phase = .contentLoaded
-
+    if phase == .contentMounted {
+      phase = .contentLoaded        
+    }
+    
   }
-
 
   @available(iOS 18.0, *)
   @available(macOS, unavailable)
